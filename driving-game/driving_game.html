@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <title>Pro-Gen Open World</title>
+    <style>
+      /* UI & OVERLAY */
+      html,
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+        font-family: "Helvetica Neue", Arial, sans-serif;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      #ui-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 24px;
+      }
+
+      /* HUD */
+      .hud-panel {
+        background: rgba(10, 10, 10, 0.75);
+        backdrop-filter: blur(10px);
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #fff;
+        max-width: 280px;
+      }
+      .hud-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #aaa;
+        letter-spacing: 1px;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+      }
+      .hud-value {
+        font-size: 24px;
+        font-weight: 600;
+        font-feature-settings: "tnum";
+      }
+      .sub-text {
+        font-size: 11px;
+        color: #888;
+        margin-top: 8px;
+        line-height: 1.4;
+      }
+
+      /* CONTROLS OVERLAY */
+      .controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 10px;
+      }
+      .k-btn {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: bold;
+      }
+
+      /* INTERACTION */
+      #interaction {
+        position: absolute;
+        bottom: 20%;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #fff;
+        color: #000;
+        padding: 8px 16px;
+        border-radius: 30px;
+        font-weight: 700;
+        font-size: 12px;
+        opacity: 0;
+        transition: opacity 0.2s;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      }
+
+      /* CINEMATIC BARS */
+      .bar {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 0px;
+        background: #000;
+        transition: height 0.5s ease;
+        z-index: 2;
+      }
+      .top {
+        top: 0;
+      }
+      .bottom {
+        bottom: 0;
+      }
+
+      /* LOADER */
+      #loader {
+        position: fixed;
+        inset: 0;
+        background: #050505;
+        z-index: 999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: opacity 0.5s;
+      }
+      .loader-text {
+        color: #fff;
+        font-size: 14px;
+        letter-spacing: 4px;
+        font-weight: 300;
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0% {
+          opacity: 0.4;
+        }
+        50% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0.4;
+        }
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="loader">
+      <div class="loader-text">GENERATING WORLD ASSETS...</div>
+    </div>
+
+    <div id="ui-layer">
+      <div class="hud-panel">
+        <div class="hud-title">Vehicle Telemetry</div>
+        <div class="hud-value" id="speedometer">
+          0 <span style="font-size: 14px; color: #666">KM/H</span>
+        </div>
+        <div class="controls">
+          <div class="k-btn">W</div>
+          <div class="k-btn">A</div>
+          <div class="k-btn">S</div>
+          <div class="k-btn">D</div>
+          <span style="font-size: 10px; color: #666">DRIVE / WALK</span>
+        </div>
+      </div>
+      <div class="hud-panel" style="align-self: flex-end">
+        <div class="hud-title">Current State</div>
+        <div
+          id="status-text"
+          style="font-size: 14px; font-weight: 600; color: #ddd"
+        >
+          ON FOOT
+        </div>
+        <div class="sub-text">
+          Physically Based Rendering (PBR)<br />ACES Filmic Tone Mapping
+        </div>
+      </div>
+    </div>
+
+    <div id="interaction">PRESS E</div>
+    <div class="bar top"></div>
+    <div class="bar bottom"></div>
+
+    <script type="module">
+      import * as THREE from "three";
+
+      // --- GRAPHICS ENGINE CONFIG ---
+      const CONFIG = {
+        shadows: true,
+        antialiasing: true,
+        toneMapping: THREE.ACESFilmicToneMapping,
+        exposure: 1.0,
+        sunPos: new THREE.Vector3(50, 30, 20), // Afternoon sun
+      };
+
+      // --- STATE ---
+      const state = {
+        mode: "on_foot", // 'on_foot' or 'in_car'
+        speed: 0,
+        keys: {},
+        colliders: [],
+        worldSize: 150,
+        time: 0,
+      };
+
+      let scene, camera, renderer;
+      let player, car, carGroup;
+      let followTarget;
+      let wheels = [];
+
+      // --- ASSET GENERATION (Procedural Textures) ---
+      // This creates detailed "noisy" textures in memory so we don't need external image files
+      function generateTexture(type) {
+        const cvs = document.createElement("canvas");
+        cvs.width = 512;
+        cvs.height = 512;
+        const ctx = cvs.getContext("2d");
+
+        if (type === "asphalt") {
+          ctx.fillStyle = "#1a1a1a";
+          ctx.fillRect(0, 0, 512, 512);
+          // Add noise
+          for (let i = 0; i < 40000; i++) {
+            ctx.fillStyle = Math.random() > 0.5 ? "#222" : "#111";
+            ctx.fillRect(Math.random() * 512, Math.random() * 512, 2, 2);
+          }
+          // Cracks
+          ctx.strokeStyle = "#0e0e0e";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          for (let i = 0; i < 5; i++) {
+            ctx.moveTo(Math.random() * 512, Math.random() * 512);
+            ctx.lineTo(Math.random() * 512, Math.random() * 512);
+          }
+          ctx.stroke();
+        } else if (type === "concrete") {
+          ctx.fillStyle = "#ccc";
+          ctx.fillRect(0, 0, 512, 512);
+          for (let i = 0; i < 50000; i++) {
+            ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.1})`;
+            ctx.fillRect(Math.random() * 512, Math.random() * 512, 2, 2);
+          }
+        } else if (type === "building") {
+          ctx.fillStyle = "#555";
+          ctx.fillRect(0, 0, 512, 512);
+          // Windows
+          ctx.fillStyle = "#1a2a3a"; // Dark glass
+          for (let y = 20; y < 512; y += 60) {
+            for (let x = 10; x < 512; x += 40) {
+              if (Math.random() > 0.1) ctx.fillRect(x, y, 25, 40);
+            }
+          }
+        }
+
+        const tex = new THREE.CanvasTexture(cvs);
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.anisotropy = 16; // Makes texture look sharp at angles
+        return tex;
+      }
+
+      const matLib = {
+        asphalt: new THREE.MeshStandardMaterial({
+          map: generateTexture("asphalt"),
+          roughness: 0.9,
+          metalness: 0.1,
+        }),
+        concrete: new THREE.MeshStandardMaterial({
+          map: generateTexture("concrete"),
+          roughness: 0.8,
+          metalness: 0.0,
+        }),
+        building: new THREE.MeshStandardMaterial({
+          map: generateTexture("building"),
+          roughness: 0.5,
+          metalness: 0.3,
+        }),
+        carPaint: new THREE.MeshPhysicalMaterial({
+          color: 0xa51d2d, // Deep Red
+          metalness: 0.6,
+          roughness: 0.2,
+          clearcoat: 1.0,
+          clearcoatRoughness: 0.1,
+        }),
+        carGlass: new THREE.MeshPhysicalMaterial({
+          color: 0x111111,
+          metalness: 0.9,
+          roughness: 0.0,
+          transmission: 0.2,
+          transparent: true,
+        }),
+        chrome: new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          metalness: 1.0,
+          roughness: 0.1,
+        }),
+      };
+
+      // --- INIT ---
+      function init() {
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ antialias: CONFIG.antialiasing });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = CONFIG.shadows;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = CONFIG.toneMapping;
+        renderer.toneMappingExposure = CONFIG.exposure;
+        document.body.appendChild(renderer.domElement);
+
+        scene = new THREE.Scene();
+        // Fog for depth
+        scene.background = new THREE.Color(0x88ccff);
+        scene.fog = new THREE.Fog(0x88ccff, 20, 1200);
+
+        camera = new THREE.PerspectiveCamera(
+          60,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          500
+        );
+
+        // Lighting
+        const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambient);
+
+        const sun = new THREE.DirectionalLight(0xffdfba, 2.5);
+        sun.position.copy(CONFIG.sunPos);
+        sun.castShadow = true;
+        sun.shadow.mapSize.width = 2048;
+        sun.shadow.mapSize.height = 2048;
+        sun.shadow.camera.near = 0.5;
+        sun.shadow.camera.far = 150;
+        const d = 60;
+        sun.shadow.camera.left = -d;
+        sun.shadow.camera.right = d;
+        sun.shadow.camera.top = d;
+        sun.shadow.camera.bottom = -d;
+        sun.shadow.bias = -0.0005;
+        scene.add(sun);
+
+        // Environment
+        createEnvironment();
+        createPlayer();
+        createCar();
+
+        // Start loop
+        window.addEventListener("resize", onResize);
+        window.addEventListener("keydown", (e) => (state.keys[e.code] = true));
+        window.addEventListener("keyup", (e) => (state.keys[e.code] = false));
+        window.addEventListener("keydown", handleInput);
+
+        document.getElementById("loader").style.opacity = 0;
+        setTimeout(() => document.getElementById("loader").remove(), 500);
+
+        animate();
+      }
+
+      function createEnvironment() {
+        // Ground
+        matLib.asphalt.map.repeat.set(30, 30);
+        const ground = new THREE.Mesh(
+          new THREE.PlaneGeometry(400, 400),
+          matLib.asphalt
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // City Generation
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+
+        // Use InstancedMesh for performance if we had thousands, but simplified here for logic
+        for (let i = 0; i < 60; i++) {
+          const w = 8 + Math.random() * 10;
+          const d = 8 + Math.random() * 10;
+          const h = 15 + Math.random() * 40;
+
+          const x = (Math.random() - 0.5) * 200;
+          const z = (Math.random() - 0.5) * 200;
+
+          if (Math.abs(x) < 15 && Math.abs(z) < 15) continue; // Safe zone
+
+          const building = new THREE.Mesh(geometry, matLib.building);
+          building.position.set(x, h / 2, z);
+          building.scale.set(w, h, d);
+          building.castShadow = true;
+          building.receiveShadow = true;
+          scene.add(building);
+
+          // Collision box
+          state.colliders.push({
+            x: x,
+            z: z,
+            w: w / 2 + 0.5,
+            d: d / 2 + 0.5,
+          });
+
+          // Sidewalk base
+          const sidewalk = new THREE.Mesh(geometry, matLib.concrete);
+          sidewalk.position.set(x, 0.1, z);
+          sidewalk.scale.set(w + 4, 0.2, d + 4);
+          sidewalk.receiveShadow = true;
+          scene.add(sidewalk);
+        }
+      }
+
+      function createCar() {
+        carGroup = new THREE.Group();
+
+        // Chassis (More shaped than a box)
+        const bodyGeo = new THREE.BoxGeometry(1.8, 0.7, 4.2);
+        const body = new THREE.Mesh(bodyGeo, matLib.carPaint);
+        body.position.y = 0.6;
+        body.castShadow = true;
+        body.receiveShadow = true;
+        carGroup.add(body);
+
+        // Cabin (Top)
+        const cabinGeo = new THREE.BoxGeometry(1.6, 0.5, 2.2);
+        const cabin = new THREE.Mesh(cabinGeo, matLib.carGlass); // Dark glass look
+        cabin.position.set(0, 1.1, -0.3);
+        carGroup.add(cabin);
+
+        // Wheels
+        const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.25, 32);
+        const wheelMat = new THREE.MeshStandardMaterial({
+          color: 0x222,
+          roughness: 0.8,
+        });
+        const rimMat = matLib.chrome;
+
+        const positions = [
+          [-0.9, 0.4, 1.3],
+          [0.9, 0.4, 1.3],
+          [-0.9, 0.4, -1.3],
+          [0.9, 0.4, -1.3],
+        ];
+
+        positions.forEach((pos) => {
+          const wGroup = new THREE.Group();
+          const tire = new THREE.Mesh(wheelGeo, wheelMat);
+          tire.rotation.z = Math.PI / 2;
+          tire.castShadow = true;
+
+          const rim = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.2, 0.2, 0.26, 8),
+            rimMat
+          );
+          rim.rotation.z = Math.PI / 2;
+
+          wGroup.add(tire);
+          wGroup.add(rim);
+          wGroup.position.set(...pos);
+          wheels.push(wGroup);
+          carGroup.add(wGroup);
+        });
+
+        // Headlights (Actual Light Sources)
+        const hLight = new THREE.SpotLight(0xffffff, 10, 40, 0.5, 0.5, 1);
+        hLight.position.set(0, 0.8, 2.0);
+        hLight.target.position.set(0, 0, 10);
+        carGroup.add(hLight);
+        carGroup.add(hLight.target);
+
+        // Headlight mesh glow
+        const hlMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(1.4, 0.15, 0.1),
+          new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        hlMesh.position.set(0, 0.8, 2.1);
+        carGroup.add(hlMesh);
+
+        carGroup.position.set(5, 0, -5);
+        scene.add(carGroup);
+        car = carGroup;
+      }
+
+      function createPlayer() {
+        const pGeo = new THREE.CapsuleGeometry(0.3, 1.2, 4, 8);
+        const pMat = new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          roughness: 0.9,
+        });
+        player = new THREE.Mesh(pGeo, pMat);
+        player.position.set(0, 0.9, 0);
+        player.castShadow = true;
+        scene.add(player);
+        followTarget = player;
+      }
+
+      // --- PHYSICS & LOGIC ---
+      function handleInput(e) {
+        if (e.code === "KeyE") toggleEnterExit();
+      }
+
+      function toggleEnterExit() {
+        const dist = player.position.distanceTo(car.position);
+        if (state.mode === "on_foot" && dist < 3) {
+          state.mode = "in_car";
+          player.visible = false;
+          followTarget = car;
+          document
+            .querySelectorAll(".bar")
+            .forEach((b) => (b.style.height = "40px")); // Cinematic bars
+          document.getElementById("status-text").innerText = "DRIVING";
+        } else if (state.mode === "in_car") {
+          state.mode = "on_foot";
+          player.position.copy(car.position);
+          player.position.x -= 2;
+          player.visible = true;
+          followTarget = player;
+          document
+            .querySelectorAll(".bar")
+            .forEach((b) => (b.style.height = "0px"));
+          document.getElementById("status-text").innerText = "ON FOOT";
+        }
+      }
+
+      function checkCollision(x, z, radius) {
+        for (let b of state.colliders) {
+          // Simple AABB vs Circle
+          const closestX = Math.max(b.x - b.w, Math.min(x, b.x + b.w));
+          const closestZ = Math.max(b.z - b.d, Math.min(z, b.z + b.d));
+          const dx = x - closestX;
+          const dz = z - closestZ;
+          if (dx * dx + dz * dz < radius * radius) return true;
+        }
+        return false;
+      }
+
+      function updatePhysics(dt) {
+        // UI Interaction
+        const distToCar = player.position.distanceTo(car.position);
+        const interactUI = document.getElementById("interaction");
+        if (state.mode === "on_foot" && distToCar < 3) {
+          interactUI.style.opacity = 1;
+          interactUI.innerText = "E : Drive";
+        } else if (state.mode === "in_car") {
+          interactUI.style.opacity = 1;
+          interactUI.innerText = "E : Exit";
+        } else {
+          interactUI.style.opacity = 0;
+        }
+
+        if (state.mode === "in_car") {
+          // CAR PHYSICS
+          const acc = 15;
+          const dec = 10;
+          const maxSpeed = 40;
+          const turnSpeed = 2.0;
+
+          if (state.keys["KeyW"]) state.speed += acc * dt;
+          else if (state.keys["KeyS"]) state.speed -= acc * dt;
+          else {
+            // Friction
+            if (Math.abs(state.speed) > 0.1)
+              state.speed -= Math.sign(state.speed) * dec * dt;
+            else state.speed = 0;
+          }
+
+          state.speed = Math.max(-15, Math.min(maxSpeed, state.speed));
+
+          let steer = 0;
+          if (Math.abs(state.speed) > 0.5) {
+            if (state.keys["KeyA"]) steer = 1;
+            if (state.keys["KeyD"]) steer = -1;
+          }
+
+          // Steer depending on speed (physics feel)
+          car.rotation.y += steer * turnSpeed * dt * (state.speed / maxSpeed);
+
+          const velX = Math.sin(car.rotation.y) * state.speed * dt;
+          const velZ = Math.cos(car.rotation.y) * state.speed * dt;
+
+          if (
+            !checkCollision(car.position.x + velX, car.position.z + velZ, 1.0)
+          ) {
+            car.position.x += velX;
+            car.position.z += velZ;
+          } else {
+            state.speed *= -0.5; // Bounce
+          }
+
+          // Wheel Visuals
+          wheels.forEach((w) => (w.rotation.x -= state.speed * dt * 0.5));
+
+          // Body tilt
+          car.children[0].rotation.z = THREE.MathUtils.lerp(
+            car.children[0].rotation.z,
+            -steer * 0.1,
+            dt * 5
+          );
+          car.children[0].rotation.x = THREE.MathUtils.lerp(
+            car.children[0].rotation.x,
+            -state.speed * 0.002,
+            dt * 5
+          );
+
+          document.getElementById("speedometer").innerHTML =
+            Math.abs(Math.floor(state.speed * 3)) +
+            ' <span style="font-size:14px; color:#666">KM/H</span>';
+        } else {
+          // PLAYER PHYSICS
+          const speed = state.keys["ShiftLeft"] ? 10 : 5;
+          const rotSpeed = 3;
+
+          if (state.keys["KeyA"]) player.rotation.y += rotSpeed * dt;
+          if (state.keys["KeyD"]) player.rotation.y -= rotSpeed * dt;
+
+          const fwd = new THREE.Vector3(0, 0, 0);
+          if (state.keys["KeyW"]) fwd.z = 1;
+          if (state.keys["KeyS"]) fwd.z = -1;
+
+          fwd.applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
+
+          if (fwd.lengthSq() > 0) {
+            const moveX = fwd.x * speed * dt;
+            const moveZ = fwd.z * speed * dt;
+
+            if (
+              !checkCollision(
+                player.position.x + moveX,
+                player.position.z + moveZ,
+                0.4
+              )
+            ) {
+              player.position.x += moveX;
+              player.position.z += moveZ;
+            }
+          }
+        }
+      }
+
+      // Smooth Camera
+      const camOffset = new THREE.Vector3();
+      const currentLookAt = new THREE.Vector3();
+
+      function updateCamera(dt) {
+        const targetPos = followTarget.position.clone();
+        const isCar = state.mode === "in_car";
+
+        // Calculate ideal offset based on rotation
+        const dist = isCar ? 8 : 4;
+        const height = isCar ? 3.5 : 2.5;
+
+        // Get rotation from target
+        const rot = followTarget.rotation.y;
+
+        const idealX = targetPos.x - Math.sin(rot) * dist;
+        const idealZ = targetPos.z - Math.cos(rot) * dist;
+        const idealY = targetPos.y + height;
+
+        // Smooth Lerp
+        camera.position.x += (idealX - camera.position.x) * dt * 4;
+        camera.position.z += (idealZ - camera.position.z) * dt * 4;
+        camera.position.y += (idealY - camera.position.y) * dt * 4;
+
+        // Look slightly ahead
+        const lookHeight = isCar ? 1 : 1.5;
+        targetPos.y += lookHeight;
+
+        currentLookAt.lerp(targetPos, dt * 10);
+        camera.lookAt(currentLookAt);
+      }
+
+      function onResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        const dt = Math.min(0.1, (now - state.time) / 1000);
+        state.time = now;
+
+        updatePhysics(dt);
+        updateCamera(dt);
+        renderer.render(scene, camera);
+      }
+
+      init();
+    </script>
+  </body>
+</html>
